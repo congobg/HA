@@ -1,0 +1,357 @@
+blueprint:
+  name: Sunrise Light Simulator v2
+  description: >
+    Gradually brighten lights and change color to simulate a natural sunrise.
+    Uses configurable step intervals (default 30 sec) with smooth transitions
+    and a non-linear curve that mimics real sunrise progression.
+
+    Cancels itself if you turn a light off or change its brightness by hand.
+    Requires Home Assistant 2024.8 or newer.
+  domain: automation
+  input:
+    target_lights:
+      name: Lights
+      description: Select lights by entity, area, device, or label for the sunrise simulation
+      selector:
+        target: {}
+    start_time:
+      name: Start Time
+      description: Time to start the sunrise simulation
+      selector:
+        time: {}
+    duration:
+      name: Duration (minutes)
+      description: How long the sunrise should last
+      default: 45
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 5
+          unit_of_measurement: minutes
+    days_of_week:
+      name: Days of Week (Optional)
+      description: Select which days to run the sunrise simulation. Leave empty to run every day.
+      default: []
+      selector:
+        select:
+          options:
+            - label: Monday
+              value: "mon"
+            - label: Tuesday
+              value: "tue"
+            - label: Wednesday
+              value: "wed"
+            - label: Thursday
+              value: "thu"
+            - label: Friday
+              value: "fri"
+            - label: Saturday
+              value: "sat"
+            - label: Sunday
+              value: "sun"
+          multiple: true
+    max_brightness:
+      name: Maximum Brightness
+      description: The maximum brightness level to reach at the end of the sunrise
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+    startup_brightness:
+      name: Startup Brightness (%)
+      description: Initial brightness when the sunrise simulation starts. Some lights (especially Govee) have issues with very low startup commands. Try 5-10% instead of 1% if your light flickers or doesn't respond at startup.
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+    start_color_temp:
+      name: Starting Color Temperature
+      description: The warm color to start the sunrise with. Presets are suggested values; use custom kelvin for fine-tuning (1800-6500K).
+      default: "2000"
+      selector:
+        select:
+          options:
+            - label: "Candlelight (1800K)"
+              value: "1800"
+            - label: "Warm White (2000K) - Recommended"
+              value: "2000"
+            - label: "Soft White (2700K)"
+              value: "2700"
+            - label: "Neutral (3000K)"
+              value: "3000"
+          custom_value: true
+    end_color_temp:
+      name: Ending Color Temperature
+      description: The cool daylight color to end the sunrise with. Presets are suggested values; use custom kelvin for fine-tuning (1800-6500K).
+      default: "5500"
+      selector:
+        select:
+          options:
+            - label: "Neutral (3000K)"
+              value: "3000"
+            - label: "Cool White (4000K)"
+              value: "4000"
+            - label: "Daylight (5000K)"
+              value: "5000"
+            - label: "Bright Daylight (5500K) - Recommended"
+              value: "5500"
+            - label: "Bright Cool Daylight (6500K)"
+              value: "6500"
+          custom_value: true
+    step_interval:
+      name: Step Interval (seconds)
+      description: >
+        Time between brightness changes. Lower values = smoother transitions but more service calls; higher values = more compatible with all lights.
+        Device recommendations: LIFX 5-10s, Philips Hue 10-15s, Govee/MQTT 15-30s, Generic dimmers 10-20s.
+        If you see jarring transitions, try increasing this value.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 60
+          step: 5
+          unit_of_measurement: seconds
+
+    stop_on_manual_change:
+      name: Stop on manual brightness change
+      description: >
+        Cancel the sunrise if the brightness of any target light stops matching what the
+        automation set. Turning a light off always cancels the sunrise, regardless of this setting.
+        Turn this off if your lights report brightness inaccurately and the sunrise keeps aborting early.
+      default: true
+      selector:
+        boolean: {}
+    manual_change_mode:
+      name: What counts as a manual change
+      description: >
+        "Lowered only" ignores manual increases (the next step will simply overwrite them).
+        "Any change" cancels on manual increases too.
+      default: "lower"
+      selector:
+        select:
+          options:
+            - label: "Only when brightness is lowered"
+              value: "lower"
+            - label: "Any brightness change (up or down)"
+              value: "any"
+    manual_change_tolerance:
+      name: Manual change tolerance (%)
+      description: >
+        How far the reported brightness may drift from the expected value before it counts as manual.
+        Raise this if lights report rounded or laggy brightness values and cancel the sunrise by accident.
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 50
+          step: 1
+          unit_of_measurement: "%"
+
+    pre_sunrise_actions:
+      name: Pre-Sunrise Actions (Optional)
+      description: Actions to run before the sunrise simulation starts
+      default: []
+      selector:
+        action: {}
+    post_sunrise_actions:
+      name: Post-Sunrise Actions (Optional)
+      description: Actions to run after the sunrise simulation completes
+      default: []
+      selector:
+        action: {}
+    on_cancel_actions:
+      name: On-Cancel Actions (Optional)
+      description: Actions to run when the sunrise is cancelled by a manual override
+      default: []
+      selector:
+        action: {}
+
+trigger:
+  - platform: time
+    at: !input start_time
+
+condition:
+  - condition: template
+    value_template: "{{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}"
+
+variables:
+  duration: !input duration
+  max_brightness: !input max_brightness
+  step_interval: !input step_interval
+  startup_brightness: !input startup_brightness
+  days_of_week: !input days_of_week
+  start_color_temp: !input start_color_temp
+  end_color_temp: !input end_color_temp
+  stop_on_manual_change: !input stop_on_manual_change
+  manual_change_mode: !input manual_change_mode
+  manual_change_tolerance: !input manual_change_tolerance
+  total_steps: "{{ (duration * 60 / step_interval) | int }}"
+  start_kelvin: "{{ start_color_temp | int(2000) }}"
+  end_kelvin: "{{ end_color_temp | int(5500) }}"
+  target_lights: !input target_lights
+  # Every light entity behind the chosen target, whether it was picked by
+  # entity, device, area or label.
+  monitored_entities: >
+    {% set t = target_lights %}
+    {% set ns = namespace(e=[]) %}
+    {% if t.entity_id is defined %}
+      {% set ns.e = ns.e + ([t.entity_id] if t.entity_id is string else t.entity_id) %}
+    {% endif %}
+    {% if t.device_id is defined %}
+      {% for d in ([t.device_id] if t.device_id is string else t.device_id) %}
+        {% set ns.e = ns.e + device_entities(d) %}
+      {% endfor %}
+    {% endif %}
+    {% if t.area_id is defined %}
+      {% for a in ([t.area_id] if t.area_id is string else t.area_id) %}
+        {% set ns.e = ns.e + area_entities(a) %}
+      {% endfor %}
+    {% endif %}
+    {% if t.label_id is defined %}
+      {% for l in ([t.label_id] if t.label_id is string else t.label_id) %}
+        {% set ns.e = ns.e + label_entities(l) %}
+      {% endfor %}
+    {% endif %}
+    {{ ns.e | select('match', 'light\.') | list | unique | list }}
+
+action:
+  - choose: []
+    default: !input pre_sunrise_actions
+
+  - action: light.turn_on
+    target: !input target_lights
+    data:
+      brightness_pct: "{{ startup_brightness }}"
+      color_temp_kelvin: "{{ start_kelvin }}"
+    continue_on_error: true
+
+  - delay:
+      seconds: 2
+
+  - repeat:
+      while:
+        - condition: template
+          value_template: "{{ repeat.index <= total_steps }}"
+        - alias: "All target lights are still on"
+          condition: template
+          value_template: >
+            {{ monitored_entities | count == 0
+               or expand(monitored_entities) | selectattr('state', 'ne', 'on') | list | count == 0 }}
+        - alias: "Brightness still matches what the automation set"
+          condition: template
+          value_template: >
+            {% if not stop_on_manual_change or monitored_entities | count == 0 or repeat.index <= 1 %}
+              true
+            {% else %}
+              {% set prev = repeat.index - 1 %}
+              {% set expected = startup_brightness
+                   + (max_brightness - startup_brightness) * ((prev / total_steps) ** 1.3) %}
+              {% set ns = namespace(manual=false) %}
+              {% for e in monitored_entities %}
+                {% set b = state_attr(e, 'brightness') %}
+                {% if b is not none %}
+                  {% set drop = expected - (b / 2.55) %}
+                  {% if drop > manual_change_tolerance
+                        or (manual_change_mode == 'any' and -drop > manual_change_tolerance) %}
+                    {% set ns.manual = true %}
+                  {% endif %}
+                {% endif %}
+              {% endfor %}
+              {{ not ns.manual }}
+            {% endif %}
+      sequence:
+        - action: light.turn_on
+          target: !input target_lights
+          data:
+            brightness_pct: "{{ (startup_brightness + (max_brightness - startup_brightness) * ((repeat.index / total_steps) ** 1.3)) | int }}"
+            color_temp_kelvin: "{{ (start_kelvin + (end_kelvin - start_kelvin) * (1 - ((1 - repeat.index / total_steps) ** 1.5))) | int }}"
+            transition: "{{ step_interval }}"
+          continue_on_error: true
+
+        # Instead of a blind delay: wait out the step, but wake up immediately
+        # if a light is switched off or its brightness leaves the expected band.
+        - wait_for_trigger:
+            - platform: template
+              value_template: >
+                {% set lo = startup_brightness
+                     + (max_brightness - startup_brightness) * (((repeat.index - 1) / total_steps) ** 1.3)
+                     - manual_change_tolerance %}
+                {% set hi = startup_brightness
+                     + (max_brightness - startup_brightness) * ((repeat.index / total_steps) ** 1.3)
+                     + manual_change_tolerance %}
+                {% set ns = namespace(stop=false) %}
+                {% for e in monitored_entities %}
+                  {% if not is_state(e, 'on') %}
+                    {% set ns.stop = true %}
+                  {% elif stop_on_manual_change %}
+                    {% set b = state_attr(e, 'brightness') %}
+                    {% if b is not none %}
+                      {% set pct = b / 2.55 %}
+                      {% if pct < lo or (manual_change_mode == 'any' and pct > hi) %}
+                        {% set ns.stop = true %}
+                      {% endif %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.stop }}
+          timeout:
+            seconds: "{{ step_interval }}"
+          continue_on_timeout: true
+
+        - if:
+            - condition: template
+              value_template: "{{ wait.trigger is not none }}"
+          then:
+            - choose: []
+              default: !input on_cancel_actions
+            - stop: "Sunrise cancelled - light was turned off or dimmed manually"
+
+  # The loop can also end because a while condition went false between steps.
+  - if:
+      - condition: or
+        conditions:
+          - condition: template
+            value_template: >
+              {{ monitored_entities | count > 0
+                 and expand(monitored_entities) | selectattr('state', 'ne', 'on') | list | count > 0 }}
+          - condition: template
+            value_template: >
+              {% if not stop_on_manual_change or monitored_entities | count == 0 %}
+                false
+              {% else %}
+                {% set ns = namespace(manual=false) %}
+                {% for e in monitored_entities %}
+                  {% set b = state_attr(e, 'brightness') %}
+                  {% if b is not none %}
+                    {% set drop = max_brightness - (b / 2.55) %}
+                    {% if drop > manual_change_tolerance
+                          or (manual_change_mode == 'any' and -drop > manual_change_tolerance) %}
+                      {% set ns.manual = true %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.manual }}
+              {% endif %}
+    then:
+      - choose: []
+        default: !input on_cancel_actions
+      - stop: "Sunrise cancelled - light was turned off or dimmed manually"
+
+  - action: light.turn_on
+    target: !input target_lights
+    data:
+      brightness_pct: "{{ max_brightness }}"
+      color_temp_kelvin: "{{ end_kelvin }}"
+    continue_on_error: true
+
+  - choose: []
+    default: !input post_sunrise_actions
+
+mode: single
