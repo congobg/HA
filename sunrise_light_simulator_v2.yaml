@@ -51,6 +51,48 @@ blueprint:
             - label: Sunday
               value: "sun"
           multiple: true
+    workday_calendar:
+      name: Calendar (Optional)
+      description: >
+        Calendar checked for today's events before the sunrise starts.
+        Leave empty to skip the calendar check.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: calendar
+    calendar_mode:
+      name: Calendar logic
+      description: >
+        "Skip if event today" suits a holidays/vacation calendar (e.g. the Holiday integration).
+        "Run only if event today" suits a work/shift calendar where working days are marked.
+      default: "skip_if_event"
+      selector:
+        select:
+          options:
+            - label: "Skip if the calendar has an event today (holidays / vacation)"
+              value: "skip_if_event"
+            - label: "Run only if the calendar has an event today (work / shifts)"
+              value: "run_if_event"
+    calendar_keyword:
+      name: Calendar keyword (Optional)
+      description: >
+        Only count events whose title contains this text (case-insensitive), e.g. "Work" or "Отпуск".
+        Leave empty to count every event.
+      default: ""
+      selector:
+        text: {}
+    workday_sensor:
+      name: Workday sensor (Optional)
+      description: >
+        A binary_sensor from the Workday integration. If set, the sunrise only runs when it is on.
+        Leave empty to skip this check.
+      default: ""
+      selector:
+        entity:
+          filter:
+            - domain: binary_sensor
+              integration: workday
     max_brightness:
       name: Maximum Brightness
       description: The maximum brightness level to reach at the end of the sunrise
@@ -180,6 +222,9 @@ trigger:
 condition:
   - condition: template
     value_template: "{{ days_of_week | length == 0 or now().strftime('%a').lower()[:3] in days_of_week }}"
+  - alias: "Workday sensor says today is a working day (if configured)"
+    condition: template
+    value_template: "{{ workday_sensor in ['', none] or is_state(workday_sensor, 'on') }}"
 
 variables:
   duration: !input duration
@@ -187,6 +232,10 @@ variables:
   step_interval: !input step_interval
   startup_brightness: !input startup_brightness
   days_of_week: !input days_of_week
+  workday_calendar: !input workday_calendar
+  calendar_mode: !input calendar_mode
+  calendar_keyword: !input calendar_keyword
+  workday_sensor: !input workday_sensor
   start_color_temp: !input start_color_temp
   end_color_temp: !input end_color_temp
   stop_on_manual_change: !input stop_on_manual_change
@@ -222,6 +271,41 @@ variables:
     {{ ns.e | select('match', 'light\.') | list | unique | list }}
 
 action:
+  # Calendar check. Runs before anything touches the lights, so a skipped day
+  # leaves them completely alone.
+  - if:
+      - condition: template
+        value_template: "{{ workday_calendar not in ['', none] }}"
+    then:
+      - action: calendar.get_events
+        target:
+          entity_id: "{{ workday_calendar }}"
+        data:
+          start_date_time: "{{ today_at('00:00') }}"
+          end_date_time: "{{ today_at('00:00') + timedelta(days=1) }}"
+        response_variable: cal
+        continue_on_error: true
+      - variables:
+          # If the calendar can't be read, cal is undefined and we fall back to running
+          # the sunrise: a missed alarm is worse than an unneeded one on a holiday.
+          calendar_ok: "{{ cal is defined and workday_calendar in cal }}"
+          events_today: >
+            {% set ev = cal[workday_calendar].events if calendar_ok else [] %}
+            {% if calendar_keyword | trim != '' %}
+              {% set ev = ev | selectattr('summary', 'defined')
+                             | selectattr('summary', 'search', calendar_keyword | trim, ignorecase=true)
+                             | list %}
+            {% endif %}
+            {{ ev | count }}
+      - if:
+          - condition: template
+            value_template: >
+              {{ calendar_ok and (
+                   (calendar_mode == 'skip_if_event' and events_today | int > 0)
+                   or (calendar_mode == 'run_if_event' and events_today | int == 0) ) }}
+        then:
+          - stop: "Sunrise skipped - not a working day according to the calendar"
+
   - choose: []
     default: !input pre_sunrise_actions
 
